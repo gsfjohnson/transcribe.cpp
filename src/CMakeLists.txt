@@ -211,18 +211,42 @@ if(APPLE)
 elseif(TRANSCRIBE_USE_SYSTEM_BLAS)
     # BLA_VENDOR can be set by the user to prefer a specific BLAS
     # (e.g. -DBLA_VENDOR=OpenBLAS). find_package probes the system.
+    #
+    # MinGW static runtime: link BLAS statically too, or the self-contained
+    # executables would still need libopenblas.dll (+ libomp.dll for MSYS2's
+    # OpenMP-threaded OpenBLAS). FindBLAS's BLA_STATIC alone does not achieve
+    # this on MinGW — it only prepends `.lib`, so `.dll.a` still wins over
+    # `.a` — hence the suffix narrowing. BLA_STATIC also makes FindBLAS retry
+    # OpenBLAS with the OpenMP runtime, which resolves to libomp.a under the
+    # same narrowing.
+    if(TRANSCRIBE_STATIC_RUNTIME)
+        set(_transcribe_saved_suffixes ${CMAKE_FIND_LIBRARY_SUFFIXES})
+        set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
+        set(BLA_STATIC ON)
+    endif()
     find_package(BLAS QUIET)
+    if(TRANSCRIBE_STATIC_RUNTIME)
+        set(CMAKE_FIND_LIBRARY_SUFFIXES ${_transcribe_saved_suffixes})
+    endif()
     if(BLAS_FOUND)
         # find_package(BLAS) may find a Fortran-only BLAS (e.g. libblas3
         # on Debian/Ubuntu) that lacks the cblas C wrappers. Verify that
         # cblas.h exists before enabling; otherwise the build compiles
-        # cblas_sgemv calls but the linker can't resolve them.
-        include(CheckIncludeFile)
-        check_include_file(cblas.h HAVE_CBLAS_H)
-        if(HAVE_CBLAS_H)
+        # cblas_sgemv calls but the linker can't resolve them. OpenBLAS
+        # packages that install it under include/openblas/ (MSYS2, Fedora)
+        # are found via the suffix; the BLAS library's sibling include dir
+        # is a hint for non-default prefixes.
+        list(GET BLAS_LIBRARIES 0 _transcribe_blas_lib)
+        get_filename_component(_transcribe_blas_prefix "${_transcribe_blas_lib}" DIRECTORY)
+        get_filename_component(_transcribe_blas_prefix "${_transcribe_blas_prefix}" DIRECTORY)
+        find_path(TRANSCRIBE_CBLAS_INCLUDE_DIR cblas.h
+            HINTS "${_transcribe_blas_prefix}/include"
+            PATH_SUFFIXES openblas)
+        if(TRANSCRIBE_CBLAS_INCLUDE_DIR)
+            target_include_directories(transcribe PRIVATE "${TRANSCRIBE_CBLAS_INCLUDE_DIR}")
             target_link_libraries(transcribe PRIVATE ${BLAS_LIBRARIES})
             target_compile_definitions(transcribe PRIVATE TRANSCRIBE_HAS_BLAS=1)
-            message(STATUS "transcribe: BLAS found — decoder will use cblas_sgemv")
+            message(STATUS "transcribe: BLAS found (${BLAS_LIBRARIES}) — decoder will use cblas_sgemv")
         else()
             message(STATUS "transcribe: BLAS found but cblas.h missing — decoder uses scalar fallback (install libopenblas-dev)")
         endif()

@@ -156,6 +156,22 @@ option(TRANSCRIBE_USE_SYSTEM_BLAS "Link non-Apple system BLAS for the host decod
 # transcribe_init_backends(). Requires TRANSCRIBE_BUILD_SHARED=ON.
 option(TRANSCRIBE_GGML_BACKEND_DL "Build ggml backends as loadable modules" OFF)
 
+# MinGW: link our executables (CLI, examples, tests) with -static so the
+# static posture's "self-contained transcribe-cli" holds there too — otherwise
+# every exe needs the toolchain's C++ runtime DLL (libc++.dll on CLANG64,
+# libstdc++-6.dll + libgcc/winpthread on gcc) on PATH. Executables only:
+# -static on a DLL link would also refuse the import libraries of a shared
+# build. Static posture only, since shared-posture exes must import
+# transcribe.dll. Does not affect what a downstream consumer of the installed
+# archives links; that is the consumer's own link line.
+if(MINGW AND NOT TRANSCRIBE_BUILD_SHARED)
+    set(_transcribe_static_runtime_default ON)
+else()
+    set(_transcribe_static_runtime_default OFF)
+endif()
+option(TRANSCRIBE_STATIC_RUNTIME
+    "MinGW: link executables with -static (no C++ runtime DLLs)" ${_transcribe_static_runtime_default})
+
 # Conservative x86 floor: default GGML_NATIVE plus EVERY x86 SIMD tier to
 # OFF so the one binary runs on baseline x86-64 without SIGILL. This is the
 # single switch behind every official-wheel CPU posture (the per-flag lists
@@ -410,6 +426,18 @@ if(MSVC)
     endif()
 endif()
 
+if(TRANSCRIBE_STATIC_RUNTIME)
+    if(NOT MINGW)
+        message(FATAL_ERROR "TRANSCRIBE_STATIC_RUNTIME applies to MinGW toolchains only")
+    endif()
+    if(TRANSCRIBE_BUILD_SHARED)
+        message(FATAL_ERROR
+            "TRANSCRIBE_STATIC_RUNTIME requires TRANSCRIBE_BUILD_SHARED=OFF "
+            "(shared-posture executables import transcribe.dll)")
+    endif()
+    add_link_options("$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:-static>")
+endif()
+
 # Windows MAX_PATH: relocate ExternalProjects (vulkan-shaders-gen) to a flat
 # <build>/e/src/ layout; inherited by add_subdirectory, so the vendored ggml
 # tree stays untouched. Anchored at CMAKE_CURRENT_BINARY_DIR so an embedding
@@ -428,6 +456,20 @@ endif()
 
 # ggml's CMake declares its own warning flags; let it.
 add_subdirectory(ggml)
+
+# MinGW static posture: ggml strips the `lib` prefix on every WIN32 toolchain
+# (ggml/CMakeLists.txt), so its archives install as ggml.a / ggml-cpu.a /
+# ggml-base.a — names a GNU-style `-lggml-cpu` cannot find. Worse, `-lggml`
+# then falls through to a system ggml (MSYS2 ships libggml.dll.a in its lib
+# dir) and silently links a different ggml as a DLL. Restore the prefix so the
+# manifest's `libraries` names resolve to OUR archives in the install lib dir.
+# Static only: the shared/module DLL names are what ggml's backend loader
+# and the provider layout expect, and MSVC (.lib, no prefix) is unaffected.
+if(MINGW AND NOT TRANSCRIBE_BUILD_SHARED)
+    include(cmake/transcribe-backend-kinds.cmake)
+    transcribe_backend_kinds(_mingw_kinds _mingw_backend_targets)
+    set_target_properties(ggml ggml-base ${_mingw_backend_targets} PROPERTIES PREFIX "lib")
+endif()
 
 # -----------------------------------------------------------------------------
 # Subdirs

@@ -23,7 +23,8 @@
 #
 # Windows note: the static-posture system-library translation below is
 # provisional (MSVC has no -framework/-lstdc++); it gets exercised and completed
-# when the Rust branch does its MSVC shakeout. The smoke lanes cover linux +
+# when the Rust branch does its MSVC shakeout. The MinGW branch names the C++
+# runtime explicitly (verified on MSYS2 CLANG64). The smoke lanes cover linux +
 # macos. (miniz is vendored into libtranscribe, so there is no external
 # compression library to translate here anymore.)
 
@@ -100,6 +101,19 @@ if(NOT TRANSCRIBE_BUILD_SHARED)
     # The archives are C++; the consumer may be C or Rust.
     if(APPLE)
         list(APPEND _system_libs c++ m)
+    elseif(MINGW)
+        # Unlike MSVC, a MinGW C/Rust driver does not link the C++ runtime on
+        # its own. Name whichever one the archives were compiled against:
+        # libc++ on MSYS2 CLANG64 (and llvm-mingw), libstdc++ for gcc and for
+        # clang in the gcc-based environments. advapi32 for the same ggml-cpu
+        # registry reads as the MSVC branch below.
+        include(CheckCXXSymbolExists)
+        check_cxx_symbol_exists(_LIBCPP_VERSION "cstddef" TRANSCRIBE_MINGW_LIBCXX)
+        if(TRANSCRIBE_MINGW_LIBCXX)
+            list(APPEND _system_libs c++ advapi32)
+        else()
+            list(APPEND _system_libs stdc++ advapi32)
+        endif()
     elseif(WIN32)
         # MSVC links the CRT and the C++ runtime implicitly. ggml-cpu reads the
         # registry for CPU feature detection (RegOpenKeyEx/RegCloseKey), so the
